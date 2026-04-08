@@ -188,10 +188,10 @@ tbody tr:hover{background:rgba(255,255,255,0.015)}
 </div>
 
 <div class="panel">
-  <div class="panel-hd"><div class="dot" style="background:var(--green)"></div><span class="panel-hd-title">次周留存门槛</span><span class="panel-hd-sub">— 不区分工作日/周末</span></div>
+  <div class="panel-hd"><div class="dot" style="background:var(--green)"></div><span class="panel-hd-title">次周有效主播门槛</span><span class="panel-hd-sub">— 直接用次周源数据字段，不限时间范围</span></div>
   <div class="thresh-inputs" style="margin-bottom:16px">
-    <div class="iw"><label>语音房有效天 ≥</label><input class="ti" id="nw-days" type="number" min="0" value="2"></div>
-    <div class="iw"><label>任务完成总次数 ≥</label><input class="ti" id="nw-tasks" type="number" min="0" value="3"></div>
+    <div class="iw"><label>语音房有效天 ≥</label><input class="ti" id="nw-days" type="number" min="0" value="1"></div>
+    <div class="iw"><label>任务完成总次数 ≥</label><input class="ti" id="nw-tasks" type="number" min="0" value="1"></div>
     <div class="iw"><label>总流水 ≥（金币）</label><input class="ti" id="nw-flow" type="number" min="0" value="0"></div>
   </div>
   <div class="divider"></div>
@@ -400,11 +400,12 @@ var pgState={
 };
 
 function pdate(s){
+  // 数据时间均为 UTC+3，明确加 +03:00 避免不同本地时区解析偏差
   if(!s)return null;
   var m=String(s).trim().match(/^(\d{4})[\/-](\d{1,2})[\/-](\d{1,2})(?:[T ](\d{1,2}):(\d{2})(?::(\d{2}))?)?/);
   if(!m)return null;
   function pad(n){return String(n||0).padStart(2,'0');}
-  var d=new Date(m[1]+'-'+pad(m[2])+'-'+pad(m[3])+'T'+pad(m[4]||0)+':'+pad(m[5]||0)+':'+pad(m[6]||0));
+  var d=new Date(m[1]+'-'+pad(m[2])+'-'+pad(m[3])+'T'+pad(m[4]||0)+':'+pad(m[5]||0)+':'+pad(m[6]||0)+'+03:00');
   return isNaN(d)?null:d;
 }
 function gv(id){return parseFloat(document.getElementById(id).value)||0;}
@@ -590,8 +591,15 @@ function calc(){
   var rW1=gv('r-w1')/100,rW2=gv('r-w2')/100;
   var w2RateThresh=(gv('r-w2-rate')||80)/100;
   var sortedTiers=TIERS_DATA.slice().sort(function(a,b){return b.minN-a.minN;});
-  var w1map=aggregate(w1Data);setp(35);
-  var w2map=hasW2?aggregate(w2Data):{};setp(55);
+  // 只计算阿语大区数据
+  var w1Filtered=w1Data.filter(function(r){return r['大区']==='阿语大区';});
+  var w1map=aggregate(w1Filtered);setp(35);
+  // 次周数据只聚合「本周出现过的主播ID」，确保判断范围是同一批人
+  var w1Ids=new Set(Object.keys(w1map));
+  var w2Filtered=hasW2?w2Data.filter(function(r){
+    return r['大区']==='阿语大区' && w1Ids.has(String(r['主播ID']));
+  }):[];
+  var w2map=hasW2?aggregate(w2Filtered):{};setp(55);
   var ids=Object.keys(w1map);
   periodStr=ids.length&&w1map[ids[0]]?w1map[ids[0]].period||'':'';
   var parts=periodStr.split('~');
@@ -602,15 +610,17 @@ function calc(){
   ids.forEach(function(id){
     var info=w1map[id];
     var jr=pdate(info.joinTime);if(!jr)return;
-    var j3=new Date(jr.getTime()-5*3600*1000);
+    var j3=jr;
     if(j3<pS||j3>pE)return;
-    var dow=(j3.getDay()+6)%7,isWE=dow>=5;
+    // 用 UTC+3 本地时间判断星期，避免设备时区影响
+    var j3utc3=new Date(j3.getTime()+3*3600*1000);
+    var dow=(j3utc3.getUTCDay()+6)%7,isWE=dow>=5;
     var w1ok=(!isWE&&info.days>=wdD&&info.tasks>=wdT&&info.flow>=wdF)||(isWE&&info.days>=weD&&info.tasks>=weT&&info.flow>=weF);
     if(!w1ok)return;
     var w2=w2map[id],w2ok=null,w2days=null,w2tasks=null,w2flow=null;
     if(hasW2){w2days=w2?w2.days:0;w2tasks=w2?w2.tasks:0;w2flow=w2?w2.flow:0;w2ok=w2?(w2.days>=nwD&&w2.tasks>=nwT&&w2.flow>=nwF):false;}
     detailRes.push({anchorId:id,nickname:info.nickname,guildId:info.guildId,guildName:info.guildName,
-      joinRaw:info.joinTime,joinUtc3:j3.toISOString().replace('T',' ').slice(0,19),
+      joinUtc3:j3utc3.toISOString().replace('T',' ').slice(0,19),
       weekday:WD[dow],isWE:isWE,w1days:info.days,w1tasks:info.tasks,w1flow:info.flow,
       w2days:w2days,w2tasks:w2tasks,w2flow:w2flow,w2ok:w2ok});
     var gk=String(info.guildId);
@@ -750,10 +760,10 @@ function renderDetailRows(data){
     html+='<td class="mono">'+d.w1days+'</td><td class="mono">'+d.w1tasks+'</td><td class="mono">'+d.w1flow.toLocaleString()+'</td>';
     // 头像框/房间背景：按公会档位
     var gaw=guildRes.find(function(g){return String(g.guildId)===String(d.guildId)&&g.cnt>=5;})||null;
-    var avCell=gaw&&gaw.avatar
+    var avCell=gaw
       ?'<img src="'+gaw.avatar+'" style="height:32px;border-radius:4px;display:block;margin:0 auto 2px"><div style="font-size:10px;color:#8891a8;text-align:center">'+gaw.tier+'人档</div>'
       :'<span class="miss">公会未达标</span>';
-    var rmCell=gaw&&gaw.room
+    var rmCell=gaw
       ?'<img src="'+gaw.room+'" style="height:32px;border-radius:4px;display:block;margin:0 auto 2px"><div style="font-size:10px;color:#8891a8;text-align:center">'+gaw.tier+'人档</div>'
       :'<span class="miss">公会未达标</span>';
     html+='<td class="img-td">'+avCell+'</td><td class="img-td">'+rmCell+'</td>';
@@ -871,7 +881,7 @@ function _doExportExcel(){
     };
   });
   var dHdr=['所属周期','公会ID','公会名称','主播ID','主播昵称',
-    '入会时间(UTC+8)','入会时间(UTC+3)','星期','类型','有效天W1','任务W1','流水W1',
+    '入会时间(UTC+3)','星期','类型','有效天W1','任务W1','流水W1',
     '头像框奖励','房间背景奖励'];
   if(hasW2) dHdr=dHdr.concat(['有效天W2','任务W2','流水W2','次周达标']);
   XLSX.utils.book_append_sheet(wb2,
@@ -880,7 +890,7 @@ function _doExportExcel(){
       var avCell=gAward?('有-'+gAward.tier+'人档，见档位参考sheet'):'所属公会未达标';
       var rmCell=gAward?('有-'+gAward.tier+'人档，见档位参考sheet'):'所属公会未达标';
       var row=[periodStr,d.guildId,d.guildName,d.anchorId,d.nickname,
-        d.joinRaw,d.joinUtc3,d.weekday,d.isWE?'周末':'工作日',
+        d.joinUtc3,d.weekday,d.isWE?'周末':'工作日',
         d.w1days,d.w1tasks,d.w1flow,
         avCell, rmCell];
       if(hasW2) row=row.concat([d.w2days!=null?d.w2days:'',d.w2tasks!=null?d.w2tasks:'',d.w2flow!=null?d.w2flow:'',d.w2ok?'是':'否']);
